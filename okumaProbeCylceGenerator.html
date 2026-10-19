@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Okuma Hole Probe Generator</title>
+<style>
+  :root { --bg:#eef0f2; --panel:#fff; --ink:#1c2227; --mute:#5d6872; --line:#cfd5da; --accent:#0b5cad; --accent-ink:#fff; --code:#14181c; --code-ink:#d6e2ec; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14181c; --panel:#1d2329; --ink:#e6ebef; --mute:#93a0ab; --line:#333c44; --accent:#5aa2e8; --accent-ink:#0c1620; --code:#0d1013; --code-ink:#c8d8e6; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:20px; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui, "Segoe UI", sans-serif; }
+  main { max-width:1000px; margin:0 auto; display:grid; gap:16px; grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
+  @media (max-width:760px) { main { grid-template-columns:1fr; } }
+  h1 { font-size:20px; margin:0 0 4px; grid-column:1/-1; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:14px; }
+  h2 { font-size:15px; margin:0 0 10px; }
+  label { display:block; font-size:13px; color:var(--mute); margin-bottom:3px; }
+  input { width:100%; padding:7px 8px; border:1px solid var(--line); border-radius:4px; background:var(--bg); color:var(--ink); font:inherit; }
+  input:focus, button:focus-visible, textarea:focus { outline:2px solid var(--accent); outline-offset:1px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .full { grid-column:1/-1; }
+  .hole { display:grid; grid-template-columns:auto 1fr 1fr auto; gap:8px; align-items:end; margin-bottom:8px; }
+  .hole b { padding-bottom:8px; min-width:92px; font-weight:600; }
+  .hole small { display:block; color:var(--mute); font-weight:400; }
+  button { padding:8px 12px; border:1px solid var(--line); border-radius:4px; background:var(--panel); color:var(--ink); font:inherit; cursor:pointer; }
+  button.primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); font-weight:600; }
+  button.x { padding:7px 10px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  textarea { width:100%; height:430px; resize:vertical; padding:10px; border:1px solid var(--line); border-radius:4px; background:var(--code); color:var(--code-ink); font:13px/1.4 ui-monospace, Consolas, monospace; white-space:pre; }
+  #msg { margin-top:8px; font-size:13px; color:var(--mute); min-height:18px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Okuma hole probe generator</h1>
+
+  <div style="display:grid;gap:16px;align-content:start">
+    <section>
+      <h2>Program settings</h2>
+      <div class="grid">
+        <div class="full"><label for="name">Program comment (first line)</label><input id="name" value="PROBETEST"></div>
+        <div class="full"><label for="refWo">Probing work offset (G15 H, the one with correct X/Y)</label><input id="refWo" type="number" min="1" step="1" value="1"></div>
+        <div><label for="startWo">Starting work offset (PS)</label><input id="startWo" type="number" min="1" step="1" value="1"></div>
+        <div><label for="pf">Probe feed (PF)</label><input id="pf" value="30.0"></div>
+        <div><label for="approach">Approach Z before probing</label><input id="approach" value="0.25"></div>
+        <div><label for="nominal">Nominal Z (probed surface)</label><input id="nominal" value="0"></div>
+        <div class="full"><label for="retract">Retract Z (PZ)</label><input id="retract" value="2"></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Holes</h2>
+      <div id="holes"></div>
+      <div class="row"><button id="add">Add hole</button></div>
+    </section>
+  </div>
+
+  <section>
+    <h2>Program</h2>
+    <textarea id="out" spellcheck="false" readonly></textarea>
+    <div class="row">
+      <button class="primary" id="save">Save program</button>
+      <button id="copy">Copy</button>
+    </div>
+    <div id="msg"></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let holes = [{x:"2", y:"0"}, {x:"8", y:"0"}];
+
+function renderHoles() {
+  const start = parseInt($("startWo").value) || 1;
+  $("holes").innerHTML = "";
+  holes.forEach((h, i) => {
+    const row = document.createElement("div");
+    row.className = "hole";
+    row.innerHTML =
+      `<b>Hole ${i + 1}<small>work offset ${start + i}</small></b>` +
+      `<div><label>X</label><input data-i="${i}" data-k="x" value="${h.x}"></div>` +
+      `<div><label>Y</label><input data-i="${i}" data-k="y" value="${h.y}"></div>` +
+      `<button class="x" data-del="${i}" aria-label="Remove hole ${i + 1}">&times;</button>`;
+    $("holes").appendChild(row);
+  });
+}
+
+function build() {
+  const v = id => $(id).value.trim();
+  const start = parseInt(v("startWo")) || 1;
+  const L = [];
+  L.push(`(${v("name")})`, "(PROGRAM SET-UP)", "G40 G80", "G90", "G0 Z999.999",
+         "IF[VTLCN EQ 99]N10", "G116T=99", "N10", `G15H${parseInt(v("refWo")) || 1}`, "G56 HA");
+  holes.forEach((h, i) => {
+    const x = h.x.trim() || "0", y = h.y.trim() || "0";
+    L.push("");
+    if (i > 0) L.push("(**********************************)");
+    L.push(`(HOLE ${i + 1} - WORK OFFSET ${start + i})`);
+    L.push(`G0 X${x} Y${y}`);
+    if (i === 0) L.push(`Z${v("retract")}`);
+    L.push("G56 H99", "CALL O9832");
+    L.push(`CALL O9810 PX=${x} PY=${y} PF=${v("pf")}`);
+    L.push(`CALL O9810 PZ=${v("approach")}`);
+    L.push(`CALL O9811 PS=${start + i} PZ=${v("nominal")}`);
+    L.push("(RETRACT MOVE)", `CALL O9810 PZ=${v("retract")}`);
+  });
+  L.push("", "(PROGRAM END)", "G90", "CALL O9833", "G0 Z=VPPLZ", "G0 X=VNPLX Y=VPPLY", "M30", "%");
+  return L.join("\n") + "\n";
+}
+
+function refresh() { $("out").value = build(); }
+
+$("holes").addEventListener("input", e => {
+  const i = e.target.dataset.i, k = e.target.dataset.k;
+  if (i !== undefined) { holes[i][k] = e.target.value; refresh(); }
+});
+$("holes").addEventListener("click", e => {
+  const d = e.target.closest("[data-del]");
+  if (!d || holes.length < 2) return;
+  holes.splice(+d.dataset.del, 1);
+  renderHoles(); refresh();
+});
+$("add").onclick = () => {
+  const last = holes[holes.length - 1] || {x:"0", y:"0"};
+  holes.push({x:"", y:last.y});
+  renderHoles(); refresh();
+  const ins = $("holes").querySelectorAll('input[data-k="x"]');
+  ins[ins.length - 1].focus();
+};
+document.querySelectorAll(".grid input, #name").forEach(el => el.addEventListener("input", () => {
+  if (el.id === "startWo") renderHoles();
+  refresh();
+}));
+
+$("copy").onclick = async () => {
+  try { await navigator.clipboard.writeText($("out").value); $("msg").textContent = "Copied."; }
+  catch { $("out").select(); document.execCommand("copy"); $("msg").textContent = "Copied."; }
+};
+
+$("save").onclick = async () => {
+  const text = $("out").value;
+  const suggested = ($("name").value.trim().replace(/[^\w\-]+/g, "_") || "PROBETEST") + ".MIN";
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: suggested,
+        types: [
+          { description: "Okuma program (.MIN)", accept: { "text/plain": [".MIN"] } },
+          { description: "NC file (.NC)", accept: { "text/plain": [".NC"] } },
+          { description: "Text file (.TXT)", accept: { "text/plain": [".TXT"] } }
+        ]
+      });
+      const w = await handle.createWritable();
+      await w.write(text); await w.close();
+      $("msg").textContent = "Saved " + handle.name;
+      return;
+    } catch (err) {
+      if (err.name === "AbortError") return;
+    }
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], {type:"text/plain"}));
+  a.download = suggested; a.click();
+  URL.revokeObjectURL(a.href);
+  $("msg").textContent = "Downloaded " + suggested + " (this browser has no save dialog, so it went to Downloads).";
+};
+
+renderHoles(); refresh();
+</script>
+</body>
+</html>
