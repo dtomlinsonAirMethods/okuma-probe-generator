@@ -40,9 +40,8 @@
     <section>
       <h2>Program settings</h2>
       <div class="grid">
-        <div class="full"><label for="name">Program comment (first line)</label><input id="name" value="PROBETEST"></div>
-        <div class="full"><label for="refWo">Probing work offset (G15 H, the one with correct X/Y)</label><input id="refWo" type="number" min="1" step="1" value="1"></div>
-        <div><label for="startWo">Starting work offset (PS)</label><input id="startWo" type="number" min="1" step="1" value="1"></div>
+        <div class="full"><label for="name">Program comment (first line)</label><input id="name" value="ProbingCycle"></div>
+        <div><label for="startWo">Starting work offset (PS and G15 H)</label><input id="startWo" type="number" min="1" step="1" value="1"></div>
         <div><label for="pf">Probe feed (PF)</label><input id="pf" value="30.0"></div>
         <div><label for="approach">Approach Z before probing</label><input id="approach" value="0.25"></div>
         <div><label for="nominal">Nominal Z (probed surface)</label><input id="nominal" value="0"></div>
@@ -53,7 +52,8 @@
     <section>
       <h2>Holes</h2>
       <div id="holes"></div>
-      <div class="row"><button id="add">Add hole</button></div>
+      <div class="row"><button id="add">Add hole</button><button id="import">Import from NC file</button><input id="file" type="file" hidden></div>
+      <div id="hmsg" style="margin-top:8px;font-size:13px;color:var(--mute)"></div>
     </section>
   </div>
 
@@ -92,7 +92,7 @@ function build() {
   const start = parseInt(v("startWo")) || 1;
   const L = [];
   L.push(`(${v("name")})`, "(PROGRAM SET-UP)", "G40 G80", "G90", "G0 Z999.999",
-         "IF[VTLCN EQ 99]N10", "G116T=99", "N10", `G15H${parseInt(v("refWo")) || 1}`, "G56 HA");
+         "IF[VTLCN EQ 99]N10", "G116T=99", "N10", `G15H${start}`, "G56 HA");
   holes.forEach((h, i) => {
     const x = h.x.trim() || "0", y = h.y.trim() || "0";
     L.push("");
@@ -165,6 +165,54 @@ $("save").onclick = async () => {
   a.download = suggested; a.click();
   URL.revokeObjectURL(a.href);
   $("msg").textContent = "Downloaded " + suggested + " (this browser has no save dialog, so it went to Downloads).";
+};
+
+function parseNC(text) {
+  const ops = []; let cur = null, mx = null, my = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const l = raw.replace(/\(.*?\)/g, "").trim().toUpperCase();
+    if (!l || l === "%") continue;
+    if (/G116\s*T\d/.test(l)) {
+      cur = { tool: (l.match(/T(\d+)/) || [])[1], wo: null, pts: [] };
+      ops.push(cur); mx = my = null; continue;
+    }
+    if (!cur) continue;
+    const g = l.match(/G15\s*H(\d+)/); if (g) cur.wo = +g[1];
+    const xm = l.match(/(?:^|[^A-Z])X(-?\d*\.?\d+)/), ym = l.match(/(?:^|[^A-Z])Y(-?\d*\.?\d+)/);
+    if (xm) mx = xm[1]; if (ym) my = ym[1];
+    if ((xm || ym) && mx !== null && my !== null) cur.pts.push({ x: mx, y: my });
+  }
+  const byTool = {};
+  ops.filter(o => o.pts.length === 1 && o.wo !== null).forEach(o => (byTool[o.tool] = byTool[o.tool] || []).push(o));
+  const best = Object.values(byTool).sort((a, b) => b.length - a.length)[0];
+  const multi = ops.filter(o => o.pts.length > 1).sort((a, b) => b.pts.length - a.pts.length)[0];
+  let list = null, source = "";
+  if (best && best.length >= 2) {
+    list = best.map(o => ({ x: o.pts[0].x, y: o.pts[0].y, wo: o.wo }));
+    source = "the individual T" + best[0].tool + " ops";
+  } else if (multi) {
+    list = multi.pts.map(p => ({ ...p, wo: null }));
+    source = "the multi-hole op (T" + multi.tool + ")";
+  }
+  return { list, multi, source };
+}
+
+$("import").onclick = () => $("file").click();
+$("file").onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = parseNC(await f.text()); e.target.value = "";
+  if (!r.list || !r.list.length) { $("hmsg").textContent = "No hole positions found in that file."; return; }
+  holes = r.list.map(h => ({ x: h.x, y: h.y }));
+  if (r.list[0].wo != null) $("startWo").value = r.list[0].wo;
+  renderHoles(); refresh();
+  const notes = [`${holes.length} holes from ${r.source}.`];
+  if (r.list[0].wo != null && r.list.some((h, i) => h.wo !== r.list[0].wo + i))
+    notes.push("Warning: the file's offsets are not consecutive, but this tool numbers them consecutively.");
+  if (r.multi && r.list[0].wo != null) {
+    const key = a => a.map(p => (+p.x).toFixed(4) + "," + (+p.y).toFixed(4)).sort().join("|");
+    notes.push(key(r.list) === key(r.multi.pts) ? "Matches the spot/drill positions." : "Warning: differs from the spot/drill positions.");
+  }
+  $("hmsg").textContent = notes.join(" ");
 };
 
 renderHoles(); refresh();
